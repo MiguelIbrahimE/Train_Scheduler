@@ -670,19 +670,50 @@ class BCPCPipelineInitiator:
         
         logger.info(f"Pipeline results saved to {output_file}")
     
-    def _make_serializable(self, obj):
-        """Convert complex objects to JSON-serializable format"""
-        
-        if hasattr(obj, '__dict__'):
-            return {k: self._make_serializable(v) for k, v in obj.__dict__.items()}
-        elif isinstance(obj, dict):
-            return {k: self._make_serializable(v) for k, v in obj.items()}
-        elif isinstance(obj, (list, tuple)):
-            return [self._make_serializable(item) for item in obj]
-        elif hasattr(obj, 'wkt'):  # Shapely geometries
-            return obj.wkt
-        else:
+       # ──────────────────────────────────────────────────────────────────────────
+    # Replace the entire _make_serializable helper with the block below
+    # ──────────────────────────────────────────────────────────────────────────
+    def _make_serializable(self, obj, _seen: set = None):
+        """
+        Convert complex / circular objects into something JSON-serialisable.
+
+        * Detects and breaks reference cycles
+        * Converts unrecognised objects to their string repr
+        * Preserves primitive types, lists, tuples and dicts
+        * Converts Shapely geometries to WKT
+        """
+        if _seen is None:
+            _seen = set()
+
+        # break cycles
+        obj_id = id(obj)
+        if obj_id in _seen:
+            return str(obj)          # fallback for repeated reference
+        _seen.add(obj_id)
+
+        # primitives
+        if obj is None or isinstance(obj, (bool, int, float, str)):
             return obj
+
+        # shapely geometries
+        if hasattr(obj, "wkt"):
+            return obj.wkt
+
+        # dataclasses / simple objects
+        if hasattr(obj, "__dict__"):
+            return {k: self._make_serializable(v, _seen) for k, v in obj.__dict__.items()}
+
+        # mappings
+        if isinstance(obj, dict):
+            return {k: self._make_serializable(v, _seen) for k, v in obj.items()}
+
+        # sequences
+        if isinstance(obj, (list, tuple, set)):
+            return [self._make_serializable(i, _seen) for i in obj]
+
+        # anything else → string representation
+        return str(obj)
+
 
 
 def main():
