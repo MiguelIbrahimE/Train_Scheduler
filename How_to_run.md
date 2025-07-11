@@ -17,3 +17,5 @@ poetry run python -m src --csv input/lebanon_cities_2024.csv --intercity
 ```bash
 python auto_run_pipeline.py
 ```
+
+poetry run python pipeline/src/pipeline_initiator.py --csv input/lebanon_cities_2024.csv --output output --verbose
