@@ -21,6 +21,8 @@ from typing import Dict, Any, List, Tuple
 import pandas as pd
 from shapely.geometry import Point, LineString, Polygon
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading, time 
 
 # Setup path for imports
 sys.path.append(str(Path(__file__).parent / "src"))
@@ -61,10 +63,10 @@ class BCPCPipelineInitiator:
     Complete BCPC analysis pipeline following the workflow diagram
     """
     
-    def __init__(self, output_dir: str = "output"):
+    def __init__(self, output_dir: str = "output", max_workers: int = 4):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
-        
+        self.max_workers = max_workers
         # Step 1: Initialize data loader
         self.data_loader = DataLoader(cache_dir=str(self.output_dir / "cache"))
         
@@ -338,115 +340,103 @@ class BCPCPipelineInitiator:
         return cost_framework
     
     def _step5_understand_terrain(self, enriched_cities: Dict[str, Any]) -> Dict[str, Any]:
-        """Step 5: Understand terrain using open source data"""
+        """Step 5: Understand terrain using parallel processing"""
         
-        logger.info("Analyzing terrain for all cities...")
+        logger.info(f"Analyzing terrain for {len(enriched_cities)} cities using {self.max_workers} workers...")
         
         terrain_results = {}
         
-        # Analyze terrain for each city individually
-        for city_name, city_data in enriched_cities.items():
-            try:
-                logger.info(f"Analyzing terrain for {city_name}...")
-                
-                # Create a small route around the city for terrain analysis
-                center = city_data['center_point']
-                
-                # Create a simple route through the city (N-S line)
-                route_coords = [
-                    (center.x - 0.02, center.y - 0.02),  # SW
-                    (center.x, center.y),                # Center
-                    (center.x + 0.02, center.y + 0.02)   # NE
-                ]
-                city_route = LineString(route_coords)
-                
-                # Analyze terrain
-                terrain_analysis = self.terrain_analyzer.analyze_route_terrain(
-                    route_line=city_route,
-                    buffer_km=3.0,
-                    dem_source=DEMSource.SRTMGL1
-                )
-                
-                terrain_results[city_name] = {
-                    'terrain_analysis': terrain_analysis,
-                    'route_line': city_route,
-                    'complexity': terrain_analysis.overall_complexity,
-                    'cost_multiplier': terrain_analysis.cost_multiplier,
-                    'feasibility': terrain_analysis.construction_feasibility
-                }
-                
-                logger.info(f"Terrain analysis for {city_name}: {terrain_analysis.overall_complexity.value} "
-                           f"(cost multiplier: {terrain_analysis.cost_multiplier:.1f}x)")
-                
-            except Exception as e:
-                logger.warning(f"Terrain analysis failed for {city_name}: {e}")
-                # Create fallback terrain data
-                terrain_results[city_name] = {
-                    'terrain_analysis': None,
-                    'route_line': city_route if 'city_route' in locals() else None,
-                    'complexity': TerrainComplexity.FLAT,
-                    'cost_multiplier': 1.0,
-                    'feasibility': 0.8
-                }
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all terrain analysis tasks
+            future_to_city = {
+                executor.submit(self._analyze_city_terrain, city_name, city_data): city_name
+                for city_name, city_data in enriched_cities.items()
+            }
+            
+            # Process completed tasks
+            completed = 0
+            for future in as_completed(future_to_city):
+                city_name = future_to_city[future]
+                try:
+                    result_city, result_data = future.result()
+                    terrain_results[result_city] = result_data
+                    completed += 1
+                    logger.info(f"Progress: {completed}/{len(enriched_cities)} cities analyzed")
+                except Exception as e:
+                    logger.error(f"Failed to get terrain result for {city_name}: {e}")
+                    # Add fallback data
+                    terrain_results[city_name] = {
+                        'terrain_analysis': None,
+                        'route_line': None,
+                        'complexity': TerrainComplexity.FLAT,
+                        'cost_multiplier': 1.0,
+                        'feasibility': 0.8
+                    }
         
         logger.info(f"Terrain analysis completed for {len(terrain_results)} cities")
         return terrain_results
-    
-    def _step6_map_routes(self, enriched_cities: Dict[str, Any], 
-                         terrain_results: Dict[str, Any]) -> Dict[str, Any]:
-        """Step 6: Map sample routes with tunnels and elevated sections"""
-        
-        logger.info("Mapping sample routes between cities...")
-        
-        route_mapping = {
-            'corridor_routes': {},
-            'station_networks': {}
-        }
-        
-        city_names = list(enriched_cities.keys())
-        
-        # Create routes between consecutive cities (simple linear corridor)
-        for i in range(len(city_names) - 1):
-            city_a = city_names[i]
-            city_b = city_names[i + 1]
-            
-            logger.info(f"Mapping route: {city_a} → {city_b}")
-            
-            # Create route line between cities
-            point_a = enriched_cities[city_a]['center_point']
-            point_b = enriched_cities[city_b]['center_point']
-            
-            # Simple straight line route (in reality, would consider terrain and obstacles)
-            route_line = LineString([point_a.coords[0], point_b.coords[0]])
-            
-            # Analyze terrain for this route
-            try:
-                route_terrain = self.terrain_analyzer.analyze_route_terrain(
-                    route_line=route_line,
-                    buffer_km=2.0
-                )
-            except Exception as e:
-                logger.warning(f"Terrain analysis failed for route {city_a}-{city_b}: {e}")
-                route_terrain = None
-            
-            # Optimize station placement for both cities
-            station_network_a = self._optimize_city_stations(city_a, enriched_cities[city_a], route_line)
-            station_network_b = self._optimize_city_stations(city_b, enriched_cities[city_b], route_line)
-            
-            route_key = f"{city_a}-{city_b}"
-            route_mapping['corridor_routes'][route_key] = {
-                'route_line': route_line,
-                'terrain_analysis': route_terrain,
-                'distance_km': route_line.length * 111,  # Convert to km
-                'city_a': city_a,
-                'city_b': city_b
+        # single-city terrain task for the thread-pool
+    def _analyze_city_terrain(self, city_name: str, city_data: Dict[str, Any]):
+        center = city_data['center_point']
+        city_route = LineString([
+            (center.x - 0.02, center.y - 0.02),
+            (center.x,         center.y),
+            (center.x + 0.02,  center.y + 0.02)
+        ])
+
+        try:
+            ta = self.terrain_analyzer.analyze_route_terrain(
+                route_line=city_route,
+                buffer_km=3.0
+            )
+            result = {
+                'terrain_analysis': ta,
+                'route_line': city_route,
+                'complexity': ta.overall_complexity,
+                'cost_multiplier': ta.cost_multiplier,
+                'feasibility': ta.construction_feasibility
             }
-            
-            route_mapping['station_networks'][city_a] = station_network_a
-            route_mapping['station_networks'][city_b] = station_network_b
-        
+        except Exception as e:
+            logger.warning("Terrain analysis failed for %s: %s", city_name, e)
+            result = {
+                'terrain_analysis': None,
+                'route_line': city_route,
+                'complexity': TerrainComplexity.FLAT,
+                'cost_multiplier': 1.0,
+                'feasibility': 0.8
+            }
+
+        return city_name, result
+
+    def _step6_map_routes(self,
+                          enriched_cities: Dict[str, Any],
+                          terrain_results: Dict[str, Any]) -> Dict[str, Any]:
+
+        logger.info("Mapping sample routes between cities in parallel…")
+        route_mapping = {'corridor_routes': {}, 'station_networks': {}}
+
+        city_names = list(enriched_cities.keys())
+        if len(city_names) < 2:
+            return route_mapping
+
+        tasks = []
+        with ThreadPoolExecutor(max_workers=self.max_workers) as exe:
+            for i in range(len(city_names) - 1):
+                a, b = city_names[i], city_names[i + 1]
+                tasks.append(exe.submit(self._map_single_route, a, b, enriched_cities))
+
+            done = 0
+            for fut in as_completed(tasks):
+                route_key, data, sta_a, sta_b = fut.result()
+                route_mapping['corridor_routes'][route_key] = data
+                route_mapping['station_networks'][sta_a[0]] = sta_a[1]
+                route_mapping['station_networks'][sta_b[0]] = sta_b[1]
+                done += 1
+                logger.info(f"Route progress: {done}/{len(tasks)}")
+
         logger.info(f"Mapped {len(route_mapping['corridor_routes'])} corridor routes")
         return route_mapping
+
     
     def _step7_optimize_routes(self, enriched_cities: Dict[str, Any],
                               terrain_results: Dict[str, Any],
@@ -627,6 +617,34 @@ class BCPCPipelineInitiator:
             logger.warning(f"Station optimization failed for {city_name}: {e}")
             return None
     
+        # ─────────────────────────── parallel route helper ──────────────────────────
+    def _map_single_route(self,
+                          city_a: str,
+                          city_b: str,
+                          enriched: Dict[str, Any]) -> Tuple[str, Dict, Tuple[str, Any], Tuple[str, Any]]:
+        point_a = enriched[city_a]['center_point']
+        point_b = enriched[city_b]['center_point']
+        route_line = LineString([point_a.coords[0], point_b.coords[0]])
+
+        try:
+            terrain = self.terrain_analyzer.analyze_route_terrain(route_line, buffer_km=2.0)
+        except Exception as exc:
+            logger.warning(f"Terrain analysis failed for route {city_a}-{city_b}: {exc}")
+            terrain = None
+
+        stations_a = self._optimize_city_stations(city_a, enriched[city_a], route_line)
+        stations_b = self._optimize_city_stations(city_b, enriched[city_b], route_line)
+
+        route_key = f"{city_a}-{city_b}"
+        data = {
+            'route_line':   route_line,
+            'terrain_analysis': terrain,
+            'distance_km':  route_line.length * 111,
+            'city_a':       city_a,
+            'city_b':       city_b
+        }
+        return route_key, data, (city_a, stations_a), (city_b, stations_b)
+
     def _select_optimal_train_type(self, daily_passengers: int, distance_km: float) -> TrainType:
         """Select optimal train type based on demand and distance"""
         
