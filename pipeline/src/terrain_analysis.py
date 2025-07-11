@@ -43,6 +43,9 @@ from scipy.interpolate import interp1d
 from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings('ignore', category=rasterio.errors.NotGeoreferencedWarning)
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading, time
+_OE_LOCK = threading.BoundedSemaphore(2)      # never hammer the service
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
