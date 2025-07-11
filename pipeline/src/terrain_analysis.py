@@ -713,434 +713,145 @@ class TerrainAnalyzer:
         
         return max(0.1, feasibility)  # Minimum 0.1 feasibility
 
-    def create_terrain_visualization(self,
-                                   terrain_analysis: TerrainAnalysis,
-                                   output_path: str = "terrain_profile.png",
-                                   figsize: Tuple[int, int] = (15, 10)) -> None:
-        """Create comprehensive terrain visualization"""
-        
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=figsize)
-        
-        profile = terrain_analysis.elevation_profile
-        
-        # 1. Elevation Profile
-        ax1.plot(profile.distances, profile.elevations, 'b-', linewidth=2, label='Elevation')
-        ax1.fill_between(profile.distances, profile.elevations, alpha=0.3)
-        ax1.set_xlabel('Distance (km)')
-        ax1.set_ylabel('Elevation (m)')
-        ax1.set_title('Elevation Profile')
-        ax1.grid(True, alpha=0.3)
-        ax1.legend()
-        
-        # Add terrain complexity color coding
-        for segment in terrain_analysis.terrain_segments:
-            color_map = {
-                TerrainComplexity.FLAT: 'green',
-                TerrainComplexity.ROLLING: 'yellow',
-                TerrainComplexity.HILLY: 'orange',
-                TerrainComplexity.MOUNTAINOUS: 'red'
-            }
-            ax1.axvspan(segment.start_km, segment.end_km, 
-                       color=color_map[segment.complexity], alpha=0.2)
-        
-        # 2. Slope Profile
-        ax2.plot(profile.distances[:-1], profile.slopes * 100, 'r-', linewidth=1, label='Slope')
-        ax2.axhline(y=RailwayConstraints.MAX_GRADE_PASSENGER * 100, color='red', 
-                   linestyle='--', label='Max Grade (2.5%)')
-        ax2.axhline(y=-RailwayConstraints.MAX_GRADE_PASSENGER * 100, color='red', linestyle='--')
-        ax2.set_xlabel('Distance (km)')
-        ax2.set_ylabel('Slope (%)')
-        ax2.set_title('Slope Profile')
-        ax2.grid(True, alpha=0.3)
-        ax2.legend()
-        
-        # Highlight areas exceeding grade limits
-        excessive_slopes = np.abs(profile.slopes) > RailwayConstraints.MAX_GRADE_PASSENGER
-        for i, excessive in enumerate(excessive_slopes):
-            if excessive and i < len(profile.distances) - 1:
-                ax2.axvspan(profile.distances[i], profile.distances[i+1], 
-                           color='red', alpha=0.5)
-        
-        # 3. Terrain Complexity Segments
-        segment_centers = [(seg.start_km + seg.end_km) / 2 for seg in terrain_analysis.terrain_segments]
-        complexity_values = [seg.avg_slope * 100 for seg in terrain_analysis.terrain_segments]
-        colors = [color_map[seg.complexity] for seg in terrain_analysis.terrain_segments]
-        
-        bars = ax3.bar(segment_centers, complexity_values, 
-                      width=self.segment_length_km * 0.8, color=colors, alpha=0.7)
-        ax3.set_xlabel('Distance (km)')
-        ax3.set_ylabel('Average Slope (%)')
-        ax3.set_title('Terrain Complexity by Segment')
-        ax3.grid(True, alpha=0.3)
-        
-        # Add legend for complexity colors
-        for complexity, color in color_map.items():
-            ax3.bar([], [], color=color, alpha=0.7, label=complexity.value.title())
-        ax3.legend()
-        
-        # 4. Infrastructure Requirements
-        tunnel_lengths = [seg.tunnel_length_km for seg in terrain_analysis.terrain_segments]
-        bridge_lengths = [seg.bridge_length_km for seg in terrain_analysis.terrain_segments]
-        
-        width = self.segment_length_km * 0.35
-        x_pos = np.array(segment_centers)
-        
-        bars1 = ax4.bar(x_pos - width/2, tunnel_lengths, width, label='Tunnels', color='brown', alpha=0.7)
-        bars2 = ax4.bar(x_pos + width/2, bridge_lengths, width, label='Bridges', color='blue', alpha=0.7)
-        
-        ax4.set_xlabel('Distance (km)')
-        ax4.set_ylabel('Length (km)')
-        ax4.set_title('Infrastructure Requirements')
-        ax4.grid(True, alpha=0.3)
-        ax4.legend()
-        
-        # Add text annotations for significant infrastructure
-        for i, (tunnel, bridge) in enumerate(zip(tunnel_lengths, bridge_lengths)):
-            if tunnel > 0.1:  # >100m tunnel
-                ax4.text(segment_centers[i], tunnel + 0.05, f'{tunnel:.1f}km', 
-                        ha='center', va='bottom', fontsize=8)
-            if bridge > 0.1:  # >100m bridge
-                ax4.text(segment_centers[i], bridge + 0.05, f'{bridge:.1f}km', 
-                        ha='center', va='bottom', fontsize=8)
-        
-        plt.tight_layout()
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        logger.info(f"Terrain visualization saved to {output_path}")
-
-def integrate_with_cost_analysis(terrain_analysis: TerrainAnalysis) -> Dict:
-    """
-    Integrate terrain analysis with cost analysis module
+def analyze_terrain_lightweight(route_line, city_name="Unknown"):
+    import logging
+    import requests
+    import numpy as np
+    import threading
+    import time
+    from shapely.geometry import LineString
     
-    Returns cost factors and adjustments for the cost_analysis module
-    """
+    logger = logging.getLogger(__name__)
+    _api_lock = threading.Lock()
     
-    cost_factors = {
-        'terrain_complexity': terrain_analysis.overall_complexity.value,
-        'base_cost_multiplier': terrain_analysis.cost_multiplier,
-        'tunnel_length_km': terrain_analysis.total_tunnel_length_km,
-        'bridge_length_km': terrain_analysis.total_bridge_length_km,
-        'earthwork_volume_m3': terrain_analysis.total_earthwork_volume,
-        'construction_feasibility': terrain_analysis.construction_feasibility,
-        
-        # Detailed cost adjustments
-        'infrastructure_adjustments': {
-            'track_construction_multiplier': terrain_analysis.cost_multiplier,
-            'additional_tunnel_cost_eur': terrain_analysis.total_tunnel_length_km * 50_000_000,  # €50M/km
-            'additional_bridge_cost_eur': terrain_analysis.total_bridge_length_km * 25_000_000,   # €25M/km
-            'earthwork_cost_eur': terrain_analysis.total_earthwork_volume * 15,  # €15/m³
-        },
-        
-        # Operational adjustments
-        'operational_adjustments': {
-            'maintenance_multiplier': 1.0 + (terrain_analysis.cost_multiplier - 1.0) * 0.3,
-            'energy_consumption_increase': max(0, (terrain_analysis.cost_multiplier - 1.0) * 0.2),
-        }
-    }
-    
-    return cost_factors
-
-def integrate_with_station_placement(terrain_analysis: TerrainAnalysis, 
-                                   station_locations: List[Point]) -> List[Dict]:
-    """
-    Integrate terrain analysis with station placement module
-    
-    Returns terrain context for station placement optimization
-    """
-    
-    analyzer = TerrainAnalyzer()
-    station_contexts = analyzer.analyze_station_terrain(
-        station_locations, 
-        terrain_analysis.route_line, 
-        terrain_analysis
-    )
-    
-    # Convert to dictionaries for easy integration
-    station_terrain_data = []
-    for context in station_contexts:
-        station_terrain_data.append({
-            'location': context.station_location,
-            'elevation': context.elevation,
-            'local_slope': context.local_slope,
-            'construction_difficulty': context.construction_cost_factor,
-            'requires_earthwork': context.platform_earthwork_required,
-            'access_difficulty': context.access_road_difficulty,
-            'drainage_challenges': context.drainage_challenges,
+    try:
+        with _api_lock:
+            route_length = route_line.length
+            num_points = min(15, max(5, int(route_length * 500)))
             
-            # Terrain suitability score (0-1, higher is better)
-            'terrain_suitability': max(0.1, 1.0 - (context.construction_cost_factor - 1.0) / 2.0)
-        })
+            sample_points = []
+            for i in range(num_points):
+                distance_ratio = i / (num_points - 1) if num_points > 1 else 0
+                point = route_line.interpolate(distance_ratio, normalized=True)
+                sample_points.append(point)
+            
+            locations = [{"latitude": p.y, "longitude": p.x} for p in sample_points]
+            
+            logger.info(f"Querying {len(locations)} elevation points for {city_name}")
+            
+            response = requests.post(
+                "https://api.open-elevation.com/api/v1/lookup",
+                json={"locations": locations},
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                results = response.json()["results"]
+                elevations = [r["elevation"] for r in results]
+                
+                logger.info(f"✅ Got elevation data for {city_name}")
+                
+                if len(elevations) > 1:
+                    elevation_range = max(elevations) - min(elevations)
+                    max_slope = 0.0
+                    
+                    for i in range(len(elevations) - 1):
+                        height_diff = abs(elevations[i+1] - elevations[i])
+                        distance_km = route_line.length * 111 / len(elevations)
+                        if distance_km > 0:
+                            slope = height_diff / (distance_km * 1000)
+                            max_slope = max(max_slope, slope)
+                    
+                    if max_slope > 0.06:
+                        complexity = TerrainComplexity.MOUNTAINOUS
+                        cost_multiplier = 4.0
+                    elif max_slope > 0.04:
+                        complexity = TerrainComplexity.HILLY 
+                        cost_multiplier = 2.5
+                    elif max_slope > 0.02:
+                        complexity = TerrainComplexity.ROLLING
+                        cost_multiplier = 1.6
+                    else:
+                        complexity = TerrainComplexity.FLAT
+                        cost_multiplier = 1.0
+                        
+                    feasibility = max(0.3, 1.0 - (max_slope * 10))
+                    
+                else:
+                    complexity = TerrainComplexity.FLAT
+                    cost_multiplier = 1.0
+                    feasibility = 0.8
+                    elevation_range = 0
+                    
+                result = type('TerrainAnalysis', (), {
+                    'overall_complexity': complexity,
+                    'cost_multiplier': cost_multiplier,
+                    'construction_feasibility': feasibility,
+                    'total_tunnel_length_km': elevation_range / 1000 * 0.1 if elevation_range > 500 else 0,
+                    'total_bridge_length_km': elevation_range / 1000 * 0.05 if elevation_range > 200 else 0,
+                    'total_earthwork_volume': elevation_range * 1000,
+                    'route_line': route_line,
+                    'elevation_profile': type('ElevationProfile', (), {
+                        'elevations': np.array(elevations),
+                        'distances': np.linspace(0, route_line.length * 111, len(elevations)),
+                        'total_length_km': route_line.length * 111
+                    })()
+                })()
+                
+                logger.info(f"✅ Terrain analysis complete for {city_name}: {complexity.value}")
+                return result
+                
+            else:
+                logger.warning(f"⚠️ Elevation API returned status {response.status_code} for {city_name}")
+                
+    except Exception as e:
+        logger.warning(f"❌ Terrain analysis failed for {city_name}: {e}")
     
-    return station_terrain_data
+    logger.info(f"Using flat terrain fallback for {city_name}")
+    result = type('TerrainAnalysis', (), {
+        'overall_complexity': TerrainComplexity.FLAT,
+        'cost_multiplier': 1.0,
+        'construction_feasibility': 0.8,
+        'total_tunnel_length_km': 0,
+        'total_bridge_length_km': 0,
+        'total_earthwork_volume': 0,
+        'route_line': route_line,
+        'elevation_profile': type('ElevationProfile', (), {
+            'elevations': np.array([100.0, 100.0]),
+            'distances': np.array([0, route_line.length * 111]),
+            'total_length_km': route_line.length * 111
+        })()
+    })()
+    
+    return result
 
-def export_terrain_analysis(terrain_analysis: TerrainAnalysis, 
-                          output_dir: str = "output") -> None:
-    """Export terrain analysis results in multiple formats"""
+def create_mock_terrain_analysis(route_line):
+    """Create mock terrain analysis for testing without API calls"""
     
-    output_path = Path(output_dir)
-    output_path.mkdir(exist_ok=True)
+    route_length_km = route_line.length * 111
     
-    # 1. Export elevation profile as CSV
-    profile_df = pd.DataFrame({
-        'distance_km': terrain_analysis.elevation_profile.distances,
-        'elevation_m': terrain_analysis.elevation_profile.elevations,
-        'slope_percent': np.append(terrain_analysis.elevation_profile.slopes * 100, np.nan),
-        'curvature': terrain_analysis.elevation_profile.curvatures
-    })
-    profile_df.to_csv(output_path / "elevation_profile.csv", index=False)
-    
-    # 2. Export terrain segments as CSV
-    segments_data = []
-    for seg in terrain_analysis.terrain_segments:
-        segments_data.append({
-            'start_km': seg.start_km,
-            'end_km': seg.end_km,
-            'complexity': seg.complexity.value,
-            'avg_slope_percent': seg.avg_slope * 100,
-            'max_slope_percent': seg.max_slope * 100,
-            'elevation_change_m': seg.elevation_change,
-            'earthwork_volume_m3': seg.earthwork_volume_estimate,
-            'tunnel_length_km': seg.tunnel_length_km,
-            'bridge_length_km': seg.bridge_length_km
-        })
-    
-    segments_df = pd.DataFrame(segments_data)
-    segments_df.to_csv(output_path / "terrain_segments.csv", index=False)
-    
-    # 3. Export summary as JSON
-    summary = {
-        'route_length_km': terrain_analysis.elevation_profile.total_length_km,
-        'overall_complexity': terrain_analysis.overall_complexity.value,
-        'cost_multiplier': terrain_analysis.cost_multiplier,
-        'construction_feasibility': terrain_analysis.construction_feasibility,
-        'total_tunnel_length_km': terrain_analysis.total_tunnel_length_km,
-        'total_bridge_length_km': terrain_analysis.total_bridge_length_km,
-        'total_earthwork_volume_m3': terrain_analysis.total_earthwork_volume,
-        'elevation_statistics': {
-            'min_elevation_m': terrain_analysis.elevation_profile.min_elevation,
-            'max_elevation_m': terrain_analysis.elevation_profile.max_elevation,
-            'elevation_gain_m': terrain_analysis.elevation_profile.elevation_gain,
-            'elevation_loss_m': terrain_analysis.elevation_profile.elevation_loss
-        },
-        'dem_source': terrain_analysis.dem_source.value,
-        'resolution_meters': terrain_analysis.resolution_meters
-    }
-    
-    with open(output_path / "terrain_summary.json", 'w') as f:
-        json.dump(summary, f, indent=2)
-    
-    # 4. Export route with terrain data as GeoJSON
-    route_geojson = {
-        "type": "Feature",
-        "geometry": {
-            "type": "LineString",
-            "coordinates": list(terrain_analysis.route_line.coords)
-        },
-        "properties": {
-            "terrain_complexity": terrain_analysis.overall_complexity.value,
-            "cost_multiplier": terrain_analysis.cost_multiplier,
-            "tunnel_length_km": terrain_analysis.total_tunnel_length_km,
-            "bridge_length_km": terrain_analysis.total_bridge_length_km,
-            "feasibility_score": terrain_analysis.construction_feasibility
-        }
-    }
-    
-    with open(output_path / "route_with_terrain.geojson", 'w') as f:
-        json.dump(route_geojson, f, indent=2)
-    
-    logger.info(f"Terrain analysis exported to {output_dir}")
-
-def generate_terrain_report(terrain_analysis: TerrainAnalysis) -> str:
-    """Generate comprehensive terrain analysis report"""
-    
-    report = []
-    report.append("=" * 70)
-    report.append("BCPC TERRAIN ANALYSIS REPORT")
-    report.append("=" * 70)
-    report.append("")
-    
-    # Route summary
-    profile = terrain_analysis.elevation_profile
-    report.append("ROUTE SUMMARY:")
-    report.append(f"  Total Length: {profile.total_length_km:.1f} km")
-    report.append(f"  Overall Complexity: {terrain_analysis.overall_complexity.value.title()}")
-    report.append(f"  Construction Feasibility: {terrain_analysis.construction_feasibility:.2f}/1.00")
-    report.append(f"  Cost Multiplier: {terrain_analysis.cost_multiplier:.1f}x")
-    report.append(f"  DEM Source: {terrain_analysis.dem_source.value}")
-    report.append("")
-    
-    # Elevation statistics
-    report.append("ELEVATION PROFILE:")
-    report.append(f"  Minimum Elevation: {profile.min_elevation:.0f} m")
-    report.append(f"  Maximum Elevation: {profile.max_elevation:.0f} m")
-    report.append(f"  Elevation Range: {profile.max_elevation - profile.min_elevation:.0f} m")
-    report.append(f"  Total Elevation Gain: {profile.elevation_gain:.0f} m")
-    report.append(f"  Total Elevation Loss: {profile.elevation_loss:.0f} m")
-    report.append("")
-    
-    # Slope analysis
-    max_slope_pct = np.max(np.abs(profile.slopes)) * 100
-    avg_slope_pct = np.mean(np.abs(profile.slopes)) * 100
-    excessive_slopes = np.sum(np.abs(profile.slopes) > RailwayConstraints.MAX_GRADE_PASSENGER)
-    slope_violations_pct = excessive_slopes / len(profile.slopes) * 100
-    
-    report.append("SLOPE ANALYSIS:")
-    report.append(f"  Maximum Slope: {max_slope_pct:.1f}%")
-    report.append(f"  Average Slope: {avg_slope_pct:.1f}%")
-    report.append(f"  Railway Grade Limit: {RailwayConstraints.MAX_GRADE_PASSENGER * 100:.1f}%")
-    report.append(f"  Grade Violations: {slope_violations_pct:.1f}% of route")
-    
-    if max_slope_pct > RailwayConstraints.MAX_GRADE_PASSENGER * 100:
-        report.append(f"  ⚠️  WARNING: Slopes exceed railway limits!")
-    
-    report.append("")
-    
-    # Infrastructure requirements
-    report.append("INFRASTRUCTURE REQUIREMENTS:")
-    report.append(f"  Total Tunnel Length: {terrain_analysis.total_tunnel_length_km:.1f} km")
-    report.append(f"  Total Bridge Length: {terrain_analysis.total_bridge_length_km:.1f} km")
-    report.append(f"  Earthwork Volume: {terrain_analysis.total_earthwork_volume:,.0f} m³")
-    
-    tunnel_pct = terrain_analysis.total_tunnel_length_km / profile.total_length_km * 100
-    bridge_pct = terrain_analysis.total_bridge_length_km / profile.total_length_km * 100
-    
-    report.append(f"  Tunnel Percentage: {tunnel_pct:.1f}%")
-    report.append(f"  Bridge Percentage: {bridge_pct:.1f}%")
-    report.append("")
-    
-    # Segment analysis
-    report.append("TERRAIN SEGMENTS:")
-    report.append(f"{'Segment':<8} {'Start':<6} {'End':<6} {'Complexity':<12} {'Avg Slope':<10} {'Tunnels':<8} {'Bridges':<8}")
-    report.append("-" * 70)
-    
-    for i, seg in enumerate(terrain_analysis.terrain_segments, 1):
-        report.append(f"{i:<8} {seg.start_km:<6.1f} {seg.end_km:<6.1f} "
-                     f"{seg.complexity.value:<12} {seg.avg_slope*100:<10.1f} "
-                     f"{seg.tunnel_length_km:<8.1f} {seg.bridge_length_km:<8.1f}")
-    
-    report.append("")
-    
-    # Complexity breakdown
-    complexity_counts = {}
-    total_length = sum(seg.end_km - seg.start_km for seg in terrain_analysis.terrain_segments)
-    
-    for seg in terrain_analysis.terrain_segments:
-        seg_length = seg.end_km - seg.start_km
-        complexity = seg.complexity.value
-        complexity_counts[complexity] = complexity_counts.get(complexity, 0) + seg_length
-    
-    report.append("COMPLEXITY BREAKDOWN:")
-    for complexity, length in complexity_counts.items():
-        percentage = length / total_length * 100
-        report.append(f"  {complexity.title()}: {length:.1f} km ({percentage:.1f}%)")
-    
-    report.append("")
-    
-    # Construction challenges
-    report.append("CONSTRUCTION CHALLENGES:")
-    
-    if terrain_analysis.total_tunnel_length_km > 0:
-        report.append(f"  🔴 Tunnel construction required ({terrain_analysis.total_tunnel_length_km:.1f} km)")
-    
-    if terrain_analysis.total_bridge_length_km > 0:
-        report.append(f"  🟡 Bridge construction required ({terrain_analysis.total_bridge_length_km:.1f} km)")
-    
-    if slope_violations_pct > 10:
-        report.append(f"  🔴 Significant grade violations ({slope_violations_pct:.1f}% of route)")
-    elif slope_violations_pct > 0:
-        report.append(f"  🟡 Minor grade violations ({slope_violations_pct:.1f}% of route)")
-    
-    if terrain_analysis.total_earthwork_volume > 1_000_000:
-        report.append(f"  🟡 Extensive earthwork required ({terrain_analysis.total_earthwork_volume:,.0f} m³)")
-    
-    if terrain_analysis.construction_feasibility < 0.7:
-        report.append(f"  🔴 Low construction feasibility ({terrain_analysis.construction_feasibility:.2f})")
-    
-    if not any(["🔴" in line or "🟡" in line for line in report[-10:]]):
-        report.append("  ✅ No major construction challenges identified")
-    
-    report.append("")
-    
-    # Cost implications
-    base_cost_increase = (terrain_analysis.cost_multiplier - 1.0) * 100
-    report.append("COST IMPLICATIONS:")
-    report.append(f"  Base Construction Cost Increase: +{base_cost_increase:.0f}%")
-    
-    if terrain_analysis.total_tunnel_length_km > 0:
-        tunnel_cost = terrain_analysis.total_tunnel_length_km * 50_000_000
-        report.append(f"  Additional Tunnel Costs: €{tunnel_cost:,.0f}")
-    
-    if terrain_analysis.total_bridge_length_km > 0:
-        bridge_cost = terrain_analysis.total_bridge_length_km * 25_000_000
-        report.append(f"  Additional Bridge Costs: €{bridge_cost:,.0f}")
-    
-    earthwork_cost = terrain_analysis.total_earthwork_volume * 15
-    report.append(f"  Earthwork Costs: €{earthwork_cost:,.0f}")
-    
-    report.append("")
-    
-    # Recommendations
-    report.append("RECOMMENDATIONS:")
-    
-    if terrain_analysis.construction_feasibility > 0.8:
-        report.append("  ✅ Route is highly feasible for railway construction")
-    elif terrain_analysis.construction_feasibility > 0.6:
-        report.append("  🟡 Route is feasible but requires careful engineering")
-        report.append("     Consider route optimization to reduce tunnel/bridge requirements")
+    if route_length_km < 100:
+        complexity = TerrainComplexity.ROLLING
+        cost_multiplier = 1.6
+        feasibility = 0.8
     else:
-        report.append("  🔴 Route presents significant construction challenges")
-        report.append("     Recommend detailed geological survey and route alternatives")
+        complexity = TerrainComplexity.HILLY
+        cost_multiplier = 2.5
+        feasibility = 0.6
     
-    if slope_violations_pct > 5:
-        report.append("  🔴 Consider route realignment to reduce excessive grades")
-        report.append("     Alternative: Implement rack railway or funicular sections")
+    result = type('TerrainAnalysis', (), {
+        'overall_complexity': complexity,
+        'cost_multiplier': cost_multiplier,
+        'construction_feasibility': feasibility,
+        'total_tunnel_length_km': route_length_km * 0.1,
+        'total_bridge_length_km': route_length_km * 0.05,
+        'total_earthwork_volume': route_length_km * 1000,
+        'route_line': route_line,
+        'elevation_profile': type('ElevationProfile', (), {
+            'elevations': np.array([100.0, 150.0, 120.0]),
+            'distances': np.array([0, route_length_km/2, route_length_km]),
+            'total_length_km': route_length_km
+        })()
+    })()
     
-    if terrain_analysis.cost_multiplier > 3.0:
-        report.append("  🟡 High construction costs - evaluate economic viability")
-        report.append("     Consider phased construction or route alternatives")
-    
-    report.append("")
-    report.append("=" * 70)
-    report.append("Report generated by BCPC Terrain Analysis Module")
-    report.append(f"DEM data source: {terrain_analysis.dem_source.value}")
-    report.append("=" * 70)
-    
-    return "\n".join(report)
-
-# Example usage and testing
-if __name__ == "__main__":
-    # Create terrain analyzer
-    analyzer = TerrainAnalyzer(
-        cache_dir="data/_cache/terrain",
-        preferred_resolution=250.0
-    )
-    
-    # Example route: Lebanon test case
-    example_route = LineString([
-        (35.5017, 33.8938),  # Beirut
-        (35.8497, 34.4373),  # Tripoli
-    ])
-    
-    logger.info("Starting terrain analysis example...")
-    
-    # Perform terrain analysis
-    terrain_analysis = analyzer.analyze_route_terrain(
-        route_line=example_route,
-        buffer_km=2.0
-    )
-    
-    # Generate and print report
-    report = generate_terrain_report(terrain_analysis)
-    print(report)
-    
-    # Create visualization
-    analyzer.create_terrain_visualization(
-        terrain_analysis, 
-        output_path="terrain_analysis_lebanon.png"
-    )
-    
-    # Export all results
-    export_terrain_analysis(terrain_analysis, output_dir="output/terrain")
-    
-    logger.info("Terrain analysis completed successfully!")
+    return result
