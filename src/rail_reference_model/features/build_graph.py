@@ -90,13 +90,25 @@ def run(
     """
     Build a NetworkX graph from *infile* and save to *outfile*.
     """
+    # build_graph.py  (inside run())
     gdf = gpd.read_file(infile)
+
+    # keep only lines
+    gdf = gdf[gdf.geometry.type.isin({"LineString", "MultiLineString"})]
+
     if gdf.crs is None or gdf.crs.to_epsg() != 4326:
         gdf = gdf.to_crs(4326)
+
 
     G = _make_graph(gdf)
 
     outfile.parent.mkdir(parents=True, exist_ok=True)
+    # drop attributes whose value is None (GraphML forbids nulls)
+    for _, _, data in G.edges(data=True):
+        null_keys = [k for k, v in data.items() if v is None]
+        for k in null_keys:
+            del data[k]
+
     nx.write_graphml(G, outfile)
     logger.info("Graph saved to %s", outfile)
 
