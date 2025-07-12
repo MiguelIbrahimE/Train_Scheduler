@@ -19,3 +19,5 @@ python auto_run_pipeline.py
 ```
 
 poetry run python pipeline/src/pipeline_initiator.py --csv input/lebanon_cities_2024.csv --output output --verbose
+
+## ML Model
