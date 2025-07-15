@@ -1,0 +1,109 @@
+countries:
+  germany:
+    name: "Germany"
+    bbox: "47.2701,5.8663,55.0581,15.0419"  # south,west,north,east
+    railway_operators: ["DB", "S-Bahn"]
+    train_types: ["ICE", "IC", "RE", "RB", "S-Bahn"]
+    terrain_types: ["flat", "hilly", "mountainous"]
+    high_speed_lines: ["ICE"]
+    commuter_lines: ["S-Bahn", "RE", "RB"]
+    intercity_lines: ["IC", "ICE"]
+    
+  switzerland:
+    name: "Switzerland"
+    bbox: "45.8180,5.9559,47.8084,10.4921"
+    railway_operators: ["SBB", "BLS"]
+    train_types: ["IC", "RE", "S-Bahn"]
+    terrain_types: ["mountainous", "hilly"]
+    high_speed_lines: ["IC"]
+    commuter_lines: ["S-Bahn", "RE"]
+    intercity_lines: ["IC"]
+    
+  japan:
+    name: "Japan"
+    bbox: "24.0000,123.0000,46.0000,146.0000"
+    railway_operators: ["JR", "Private"]
+    train_types: ["Shinkansen", "Limited Express", "Local"]
+    terrain_types: ["mountainous", "coastal", "urban"]
+    high_speed_lines: ["Shinkansen"]
+    commuter_lines: ["Local", "Rapid"]
+    intercity_lines: ["Limited Express", "Shinkansen"]
+    
+  france:
+    name: "France"
+    bbox: "41.3333,-5.0000,51.0000,9.5000"
+    railway_operators: ["SNCF"]
+    train_types: ["TGV", "Intercités", "TER"]
+    terrain_types: ["flat", "hilly", "mountainous"]
+    high_speed_lines: ["TGV"]
+    commuter_lines: ["TER"]
+    intercity_lines: ["Intercités", "TGV"]
+    
+  netherlands:
+    name: "Netherlands"
+    bbox: "50.7500,3.2000,53.7000,7.2000"
+    railway_operators: ["NS"]
+    train_types: ["Intercity", "Sprinter"]
+    terrain_types: ["flat", "coastal"]
+    high_speed_lines: ["Intercity"]
+    commuter_lines: ["Sprinter"]
+    intercity_lines: ["Intercity"]
+    
+  austria:
+    name: "Austria"
+    bbox: "46.3722,9.5307,49.0205,17.1608"
+    railway_operators: ["ÖBB"]
+    train_types: ["Railjet", "IC", "RE", "S-Bahn"]
+    terrain_types: ["mountainous", "hilly"]
+    high_speed_lines: ["Railjet"]
+    commuter_lines: ["S-Bahn", "RE"]
+    intercity_lines: ["IC", "Railjet"]
+    
+  sweden:
+    name: "Sweden"
+    bbox: "55.0000,10.0000,69.0000,24.0000"
+    railway_operators: ["SJ"]
+    train_types: ["X2000", "Intercity", "Regional"]
+    terrain_types: ["flat", "hilly", "forest"]
+    high_speed_lines: ["X2000"]
+    commuter_lines: ["Regional"]
+    intercity_lines: ["Intercity", "X2000"]
+    
+  denmark:
+    name: "Denmark"
+    bbox: "54.5000,8.0000,57.8000,15.2000"
+    railway_operators: ["DSB"]
+    train_types: ["Intercity", "Regional", "S-train"]
+    terrain_types: ["flat", "coastal"]
+    high_speed_lines: ["Intercity"]
+    commuter_lines: ["S-train", "Regional"]
+    intercity_lines: ["Intercity"]
+
+# API endpoints
+apis:
+  elevation:
+    base_url: "https://api.open-elevation.com/api/v1"
+    rate_limit: 1000  # requests per hour
+    
+  overpass:
+    base_url: "https://overpass-api.de/api/interpreter"
+    timeout: 60
+    
+  nominatim:
+    base_url: "https://nominatim.openstreetmap.org"
+    
+# Railway classification
+railway_hierarchy:
+  high_speed: ["ICE", "TGV", "Shinkansen", "Railjet", "X2000"]
+  intercity: ["IC", "Intercités", "Limited Express", "Intercity"]
+  regional: ["RE", "TER", "Regional", "RB"]
+  commuter: ["S-Bahn", "S-train", "Sprinter", "Local"]
+  
+# Terrain cost multipliers
+terrain_costs:
+  flat: 1.0
+  hilly: 1.5
+  mountainous: 2.5
+  coastal: 1.2
+  urban: 1.8
+  forest: 1.3
