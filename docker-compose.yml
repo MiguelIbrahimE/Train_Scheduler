@@ -1,0 +1,54 @@
+
+########################
+#  Build once, reuse.  #
+########################
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile      # the one you already added
+  image: rail-ref:latest        # local tag we’ll reuse
+  volumes:
+    - ./data:/app/data          # raw / processed rail files
+    - ./model_artifacts:/app/model_artifacts
+  environment:
+    PYTHONPATH: /app/src
+
+services:
+  ########################
+  #  One-shot trainers   #
+  ########################
+  train-be:
+    <<: *common
+    profiles: ["train"]         # only runs when you ask for it
+    command: >
+      python -m rail_reference_model.models.train_model
+      data/processed/rail_be.graphml model_artifacts/be
+      --epochs 30 --dim 128
+
+  train-ch:
+    <<: *common
+    profiles: ["train"]
+    command: >
+      python -m rail_reference_model.models.train_model
+      data/processed/rail_ch.graphml model_artifacts/ch
+      --epochs 30 --dim 128
+
+  train-lu:
+    <<: *common
+    profiles: ["train"]
+    command: >
+      python -m rail_reference_model.models.train_model
+      data/processed/rail_lu.graphml model_artifacts/lu
+      --epochs 30 --dim 128
+
+  ########################
+  #   FastAPI service    #
+  ########################
+  api:
+    <<: *common
+    ports:
+      - "8000:8000"
+    command: >
+      uvicorn rail_reference_model.inference.service:app
+      --host 0.0.0.0 --port 8000
+    restart: unless-stopped
